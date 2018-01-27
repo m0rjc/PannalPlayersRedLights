@@ -86,6 +86,11 @@ inputValue	RES 1
 
 	SUBTITLE "Main Code - Initialisation"
 main
+	bsf STATUS, RP0 ;Bank 1
+	call 3FFh ;Get the cal value
+	movwf OSCCAL ;Calibrate
+	bcf STATUS, RP0 ;Bank 0
+	
 	; GPIO Pins 4,5 as input with weak pullup. Pin 0 as output
 	;      Pin 3 is MCLR/Vpp. 
 	;      Pin 1 high impedance with weak pullup - open 
