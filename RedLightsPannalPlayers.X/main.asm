@@ -128,10 +128,18 @@ changeDisplay_2
 	BTFSS runState, RUNSTATE_LATCH	    ; if(LATCH)
 	GOTO changeDisplay_normalRun
 changeDisplay_latch			    ; In latch mode we fade in as quick as we can
+	COMF outputState, W
+	BTFSC STATUS, Z
+	GOTO changeDisplay_latch_nothingToDo
 	CALL selectChannel
+	MOVF fadeMask, W
+	ANDWF outputState, W	   ; Check to see if the bit is already set
+	BTFSS STATUS, Z		    ; ZERO means it was not
+	GOTO changeDisplay_latch
 	MOVF fadeMask, W
 	IORWF outputState, F
 	CALL crossFade
+changeDisplay_latch_nothingToDo
 	CLRF timeToNextChange
 	RETURN
 changeDisplay_normalRun			    ; else normal run.
