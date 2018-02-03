@@ -10,7 +10,7 @@
 	 __CONFIG _FOSC_INTOSCCLK & _WDTE_OFF & _PWRTE_ON & _MCLRE_OFF & _BOREN_OFF & _LVP_OFF & _CPD_OFF & _CP_OFF
 
 	; Random seeds. Two non zero values
-	#define RANDOM_SEED_1 b'10010001'
+	#define RANDOM_SEED_1 b'10010101'
 	#define RANDOM_SEED_2 b'01101011'
 		
 ;------------------------------------------------------------------------------
@@ -23,11 +23,6 @@ BUSYLOOP MACRO iterations
     GOTO $-1
     ENDM
 	
-; for 16F628A only	
-; Use  _INTOSC_OSC_NOCLKOUT  for 
-; internal 4 mHz osc and no ext reset, use pin RA5 as an input
-; Use _HS_OSC for a 16 mHz ext crystal. 
-; Use _XT_OSC for 4 mHz ext crystal. Page 95 in spec sheet. 
 
 	UDATA_SHR	; Begin General Purpose-Register
 COUNT1	    RES 1
@@ -36,12 +31,14 @@ COUNT3	    RES 1
 prngRegister1	    RES 1		; Random number generator shift register 1
 prngRegister2	    RES 1		; Random number generator shift register 2
 outputState	    RES 1		; Desired output state of the LEDs
-fadeMask	    RES 1		; Mask to use when fading
+fadeMask	    RES 1		; Port B mask to use when fading
+fadeMaskA	    RES 1		; Port A fade mask
 runState	    RES 1		; System run state
-	    #define RUNSTATE_RUN    0
+	    #define RUNSTATE_RUN    7
 	    #define RUNSTATE_LATCH  1
-	    #define RUNSTATE_RX	    2
-	    #define RUNSTATE_TEST   7
+	    #define RUNSTATE_RX	    3
+	    #define RUNSTATE_TEST   2
+	    #define RUNSTATE_SKEW   0	; Clock skew detected
 timeToNextChange    RES 1		; How many 0.1s reads to wait until next lighting change
 lampCount	RES 1	
 timerRead   RES 1
@@ -57,11 +54,13 @@ setup ; init PIC16F628A
 
 	banksel TRISB    ; BSF	STATUS,RP0 Jump to bank 1 use BANKSEL instead
 	CLRF TRISB	    ; All outputs
+	BCF TRISB, 1	    ; ... except RB1 which is RX if we use serial comms
 	CLRF TRISA	    ; All outputs
-	BSF TRISA, 4	    ; ... except input on 4 for Timer0 clock 
+	BSF TRISA, 4	    ; ... except RA4 for Timer0 clock 
 	
 	banksel INTCON ; back to bank 0
 	clrf	PORTB
+	clrf	PORTA
 
 	; Timer 1, 1:2 prescaler, internal clock
 	MOVLW b'00010001'
@@ -93,9 +92,16 @@ initRandom
 
 main
 	CALL readInput
+
+	; Write runstate debugging to the LEDs
 	BANKSEL PORTA
 	MOVF runState, W
-	MOVWF PORTA
+	ANDLW b'11001001'   ; Do not affect driver outputs or inputs
+	IORWF PORTA, F	; Set any on LEDs from runstate
+	MOVF runState, W
+	IORLW b'00110110'   ; Do not affect driver outputs or inputs
+	ANDWF PORTA, F
+	
 	CALL changeDisplay
 	GOTO main
 	
@@ -106,13 +112,9 @@ changeDisplay
 	BTFSS runState, RUNSTATE_TEST	    ; if(TEST)
 	GOTO changeDisplay_1
 changeDisplay_test
-;	CLRF outputState
-;	CALL crossFade
-;	COMF outputState
-;	CALL crossFade
 	MOVF timerRead, W
-	BANKSEL PORTB
-	MOVWF PORTB
+	MOVWF outputState
+	CALL crossFade
 	RETURN
 changeDisplay_1
 	BTFSC runState, RUNSTATE_RUN	    ; if(not RUN)
@@ -265,12 +267,19 @@ readInput_delay
 	
 	CLRF runState
 	
-	; Check to see if there was a signal.
+	; Check to see if there was a signal. If not then skip read routine.
 	MOVLW D'15'
 	SUBWF timerRead, W
-	BTFSC STATUS, C
+	BTFSS STATUS, C
+	RETURN
+	
 	BSF runState, RUNSTATE_RX
-
+	BTFSS timerRead, 4	; Center freq is b'xx10xxxx'
+	GOTO readInput_decodeCount
+	BTFSS timerRead, 5
+	BSF runState, RUNSTATE_SKEW 
+	
+readInput_decodeCount
 	; Inputs are 00 STOP, 01 RUN, 10 LATCH, 11 TEST
 	BTFSC timerRead, 7
 	GOTO readInput_latchOrTest
@@ -291,7 +300,11 @@ readInput_selfTest
 	
 	
 ;-------------------------------------------------------------------------------
-; Perform a PWM transition over approximately 1 second moving PORTB to outputState
+; Perform a PWM transition over approximately 1 second moving output pins to outputState
+;
+; Pin assignments:	output: 76543210
+;			PORTA :      21
+;			PORTB : 76543  0
 ;
 ; If we fade over 256 transitions using an 8 bit PWM we need a decision frequency
 ; of about 65.5kHz. This is an inner loop of about 15 cycles. Tune this to give
@@ -299,13 +312,24 @@ readInput_selfTest
 ;-------------------------------------------------------------------------------
 	subtitle "PWM output transition"
 crossFade
+	; Port B fade mask
 	MOVFW outputState
 	XORWF PORTB, W
+	ANDLW b'11111001'   ; Pins affected on Port B
 	MOVWF fadeMask	    ; fadeMask when xored with PORTB will produce outputState
+	
+	; Port A fade mask
+	MOVFW outputState
+	XORWF PORTA, W
+	ANDLW b'00000110'   ; Pins affected on Port A
+	MOVWF fadeMaskA
+	
 	CLRF  COUNT1	    ; Outer loop, increment to 255
 crossFade_outerLoop
 	MOVFW fadeMask
 	XORWF PORTB, F	    ; PWM high
+	MOVFW fadeMaskA
+	XORWF PORTA, F	
 	INCF  COUNT1, F	    ; Increment outer counter, finish on overflow
 	BTFSC STATUS, Z
 	GOTO crossFade_end
@@ -313,8 +337,6 @@ crossFade_outerLoop
 	MOVWF COUNT2
 	NOP		    ; NOPs here plus the logic above and below
 	NOP		    ; will take the minimum time to PWM low to 15 operations
-	NOP
-	NOP
 	NOP
 crossFade_innerLoopHigh
 	DECF  COUNT2, F
@@ -325,14 +347,14 @@ crossFade_innerLoopHigh
 crossFade_innerLoopHighEnd
 	MOVFW fadeMask
 	XORWF PORTB, F	    ; PWM low
+	MOVFW fadeMaskA
+	XORWF PORTA, F
 	MOVFW COUNT1
 	MOVWF COUNT2	    ; count2 = count1 (count1 = {1..255})
 	COMF COUNT2, F	    ; count2 ones complement {254..0}
 	INCF COUNT2, F	    ; count2 ranges {255..1}
 	NOP		    ; NOPs here plus the logic above and below
 	NOP		    ; will take the minimum time to PWM high to 15 operations
-	NOP
-	NOP
 	NOP
 	NOP
 	NOP
