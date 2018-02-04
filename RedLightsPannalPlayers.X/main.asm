@@ -42,6 +42,8 @@ runState	    RES 1		; System run state
 timeToNextChange    RES 1		; How many 0.1s reads to wait until next lighting change
 lampCount	RES 1	
 timerRead   RES 1
+timerTuning RES 1		; Control loop to adjust sample period.
+timerError  RES 1		; Magnitude of the error signal for debugging
 
 	ORG     0x000   ; processor reset vector
 ;	goto    setup   ; go to beginning of program
@@ -65,6 +67,8 @@ setup ; init PIC16F628A
 	; Timer 1, 1:2 prescaler, internal clock
 	MOVLW b'00010001'
 	MOVWF T1CON
+	MOVLW D'127'
+	MOVWF timerTuning
 	
 	; Timer 0, 1:1 prescaler, external input on RA4
 	CLRWDT ;Clear WDT  (instructions from datasheet for safe setup of prescaler)
@@ -101,7 +105,7 @@ main
 	MOVF runState, W
 	IORLW b'00110110'   ; Do not affect driver outputs or inputs
 	ANDWF PORTA, F
-	
+
 	CALL changeDisplay
 	GOTO main
 	
@@ -248,14 +252,39 @@ countLamps
 ;-------------------------------------------------------------------------------
 	subtitle "AFSK Input Read"
 readInput
-	BANKSEL PORTA
-;	BSF PORTA, 2
+	; Multiple timerTuning by 32 and place in {COUNT2,COUNT1}
+	MOVF timerTuning, W
+	MOVWF COUNT1
+	CLRF COUNT2
+	BCF STATUS, C
+	RLF COUNT1  ;2
+	RLF COUNT2
+	RLF COUNT1  ;4
+	RLF COUNT2
+	RLF COUNT1  ;8
+	RLF COUNT2
+	RLF COUNT1  ;16
+	RLF COUNT2
+	RLF COUNT1  ;32
+	RLF COUNT2
+	; Add the minimum counts calculated in the spreadsheet such that 
+	; when timerTuning is mid range we get the desired count.
+	; https://docs.google.com/spreadsheets/d/1D80uUIUwJ-t4BcKdUp8j-lb8OnDpyT60FGlRb9KkIp8/edit#gid=0
+	MOVLW D'210'  ; TMR1L
+	ADDWF COUNT1, F
+	BTFSC STATUS, C
+	INCF COUNT2, F
+	MOVLW D'44'	; TMR1H
+	ADDWF COUNT2, F
+	
 	BANKSEL TMR1H
 	CLRF TMR1H
-	MOVLW D'50'	; See calculation spreadsheet https://docs.google.com/spreadsheets/d/1D80uUIUwJ-t4BcKdUp8j-lb8OnDpyT60FGlRb9KkIp8/edit#gid=0
+	MOVF COUNT1, W
 	MOVWF TMR1L
-	MOVLW D'60'
+	MOVF COUNT2, W
 	MOVWF TMR1H
+	
+	; Start counting pulses
 	CLRF TMR0
 readInput_delay
 	BTFSS TMR1H, 7
@@ -264,21 +293,55 @@ readInput_delay
 	GOTO $-1
 	MOVF TMR0, W
 	MOVWF timerRead
-	
-	CLRF runState
-	
+		
 	; Check to see if there was a signal. If not then skip read routine.
+	BCF runState, RUNSTATE_RX
 	MOVLW D'15'
 	SUBWF timerRead, W
 	BTFSS STATUS, C
 	RETURN
 	
+	CLRF runState
 	BSF runState, RUNSTATE_RX
-	BTFSS timerRead, 4	; Center freq is b'xx10xxxx'
-	GOTO readInput_decodeCount
-	BTFSS timerRead, 5
-	BSF runState, RUNSTATE_SKEW 
 	
+	; Check for timer skew by looking for:
+	;	b'xx10xxxx' - We got too many or correct counts (signal fast)
+	;	b'xx01xxxx' - We got too few counts (signal slow)
+	; If the timer is close enough run the feedback loop to bring it in
+	; line.
+	MOVF timerRead, W
+	ANDLW b'00110000'   ; Bits we're interested in
+	XORLW b'00100000'   ; XOR with desired result and check for zero
+	BTFSC STATUS, Z
+	GOTO readInput_skewCountHigh
+	MOVF timerRead, W
+	ANDLW b'00110000'   ; Bits we're interested in
+	XORLW b'00010000'   ; XOR with desired result and check for zero
+	BTFSC STATUS, Z
+	GOTO readInput_skewCountLow
+readInput_skewWacko
+	BSF runState, RUNSTATE_SKEW 
+	GOTO readInput_decodeCount
+readInput_skewCountHigh	    ; We got a slightly high count so reduce the period
+			    ; by increasing the timer initial value
+	MOVF timerRead, W   ; debug show error
+	ANDLW d'00001111'
+	MOVWF timerError
+
+	COMF timerTuning, W ; First we check we've not overflowed.
+	BTFSS STATUS, Z
+	INCF timerTuning, F
+	GOTO readInput_decodeCount
+readInput_skewCountLow	    ; We got a slightly low count so increase the period
+	COMF timerRead, W   ; debug show negative of error
+	ADDLW d'1'
+	ANDLW d'00001111'
+	MOVWF timerError
+	
+	MOVF timerTuning, F ; by reducing the timer initial value.
+	BTFSS STATUS, Z	    ; First we check we've not overflowed.
+	DECF timerTuning, F
+	; Drop through
 readInput_decodeCount
 	; Inputs are 00 STOP, 01 RUN, 10 LATCH, 11 TEST
 	BTFSC timerRead, 7
