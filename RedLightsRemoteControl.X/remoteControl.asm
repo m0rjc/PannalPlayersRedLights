@@ -28,15 +28,14 @@
 ; https://docs.google.com/spreadsheets/d/1D80uUIUwJ-t4BcKdUp8j-lb8OnDpyT60FGlRb9KkIp8	
 ;**********************************************************************
 	#define	TIMER_STOP_H		D'249'
-	#define	TIMER_RUN_H		D'253'
+	#define	TIMER_RUN_H		D'254'
 	#define	TIMER_LATCH_H		D'254'
 	#define	TIMER_SELF_TEST_H	D'255'
 				
-	#define	TIMER_STOP_L		D'230'
-	#define	TIMER_RUN_L		D'228'
-	#define	TIMER_LATCH_L		D'208'
-	#define	TIMER_SELF_TEST_L	D'46'
-	
+	#define	TIMER_STOP_L		D'245'
+	#define	TIMER_RUN_L		D'7'
+	#define	TIMER_LATCH_L		D'215'
+	#define	TIMER_SELF_TEST_L	D'49'	
 
 	UDATA_SHR	; Begin General Purpose-Register
 wTmp		RES 1
