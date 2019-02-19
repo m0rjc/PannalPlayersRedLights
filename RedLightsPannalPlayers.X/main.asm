@@ -1,11 +1,36 @@
-
-;**********************************************************************
-; PIC16F628A use internal 4 mHz clock                                                     
-;**********************************************************************
-
+;
+; Provide "animal eyes" effects for a village pantomime.
+; Drives 8 LED pairs, operating in 3 modes.
+;
+; STOP - The lights are off. If they were on then they turn off by fading
+;	 out one at a time. The light to fade out is chosen randomly. If the
+;	 chosen light is already out then no change.
+;	 We found in the show that this could take too long sometimes, so would
+;	 change the code to either speed up or always choose a light that's on.
+;	 In the case of the latter fade out would take up to 8 seconds so
+;	 work well.
+;
+; RUN  - lights fade in and out such that there are always some animal eyes
+;	 showing. The time intervals and selection of eyes is pseudorandom.
+;	 We found that sometimes parts of the auditorium could be left dark for
+;	 short periods. Such is randommness. Better placement of "eyes" may help.
+;
+; LATCH - Lights fade in quite rapidly and stay on. This was used when we wanted
+;	 lots of eyes when the wolf characters were in the auditorium. We also used
+;	 it to bring up the amount of lights quickly when going into RUN.
+;
+; Communication is by pulse counting. We used a balanced line to get pulses from the
+; controller to the effects boxes to try to avoid issues from noise sources in the
+; auditorium. This worked well, though in hindsight there is a risk of any extra pulses
+; upsetting the count. We didn't notice this in practice, even with quite long cable
+; runs. 
+;	
+; The PORTB Serial pins have been left open to allow future use of the hardware with more
+; more complex command sets. To make up 8 channels we use 2 pins on PORT A as well.
+	
 	title "Pannal Players Red-Eyes Effect"
-	list      p=16f628A           ; list directive to define processor
-	#include <p16F628A.inc>       ; processor specific variable definitions
+	list      p=16f628A           
+	#include <p16F628A.inc>       
 
 	 __CONFIG _FOSC_INTOSCCLK & _WDTE_OFF & _PWRTE_ON & _MCLRE_OFF & _BOREN_OFF & _LVP_OFF & _CPD_OFF & _CP_OFF
 
@@ -24,8 +49,8 @@ BUSYLOOP MACRO iterations
     ENDM
 	
 
-	UDATA_SHR	; Begin General Purpose-Register
-COUNT1	    RES 1
+	UDATA_SHR		; Use shared access RAM for simplicity in this project.
+COUNT1	    RES 1		; Three temporary variables
 COUNT2	    RES 1
 COUNT3	    RES 1
 prngRegister1	    RES 1		; Random number generator shift register 1
@@ -40,39 +65,38 @@ runState	    RES 1		; System run state
 	    #define RUNSTATE_TEST   2
 	    #define RUNSTATE_SKEW   0	; Clock skew detected
 timeToNextChange    RES 1		; How many 0.1s reads to wait until next lighting change
-lampCount	RES 1	
-timerRead   RES 1
-timerTuning RES 1		; Control loop to adjust sample period.
-timerError  RES 1		; Magnitude of the error signal for debugging
+lampCount	    RES 1		; How many lamps are currently lit
+timerRead	    RES 1		; Number of pulses read by the timer.
+timerTuning	    RES 1		; Control loop variable to adjust sample period.
+timerError	    RES 1		; Magnitude of the control signal error, for debugging
 
 	ORG     0x000   ; processor reset vector
-;	goto    setup   ; go to beginning of program
 
-setup ; init PIC16F628A
+setup 
 
 	BANKSEL CMCON
 	movlw	0x07  ; Turn comparators off
 	movwf	CMCON
 
-	banksel TRISB    ; BSF	STATUS,RP0 Jump to bank 1 use BANKSEL instead
+	banksel TRISB	    
 	CLRF TRISB	    ; All outputs
 	BCF TRISB, 1	    ; ... except RB1 which is RX if we use serial comms
 	CLRF TRISA	    ; All outputs
 	BSF TRISA, 4	    ; ... except RA4 for Timer0 clock 
 	
-	banksel INTCON ; back to bank 0
+	banksel INTCON 
 	clrf	PORTB
 	clrf	PORTA
 
 	; Timer 1, 1:2 prescaler, internal clock
 	MOVLW b'00010001'
 	MOVWF T1CON
-	MOVLW D'127'
+	MOVLW D'127'	    ; Start with the control loop at mid-point.
 	MOVWF timerTuning
 	
 	; Timer 0, 1:1 prescaler, external input on RA4
-	CLRWDT ;Clear WDT  (instructions from datasheet for safe setup of prescaler)
-	CLRF TMR0 ;Clear TMR0 and Prescaler
+	CLRWDT ; (See instructions in datasheet for safe setup of prescaler)
+	CLRF TMR0 
 	BANKSEL OPTION_REG
 	MOVLW b'00101111'
 	MOVWF OPTION_REG 
@@ -90,8 +114,6 @@ initRandom
 	clrf runState
 	clrf timeToNextChange
 
-	;goto main
-
 	BSF runState, RUNSTATE_RUN
 
 main
@@ -101,7 +123,7 @@ main
 	BANKSEL PORTA
 	MOVF runState, W
 	ANDLW b'11001001'   ; Do not affect driver outputs or inputs
-	IORWF PORTA, F	; Set any on LEDs from runstate
+	IORWF PORTA, F	    ; Set any on LEDs from runstate
 	MOVF runState, W
 	IORLW b'00110110'   ; Do not affect driver outputs or inputs
 	ANDWF PORTA, F
